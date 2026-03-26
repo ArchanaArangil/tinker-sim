@@ -209,3 +209,593 @@ module tinker_memory(
         end
     end
 endmodule
+
+module alu(
+    input logic [63:0] a,
+    input logic [63:0] b,
+    input logic [4:0] op,
+    output logic [63:0] result
+);
+
+    localparam ADD    = 5'h00;
+    localparam SUB    = 5'h01;
+    localparam AND    = 5'h02;
+    localparam OR     = 5'h03;
+    localparam XOR    = 5'h04;
+    localparam NOT    = 5'h05;
+    localparam LSHIFT = 5'h06;
+    localparam RSHIFT = 5'h07;
+    localparam MUL    = 5'h08;
+    localparam DIV    = 5'h09;
+    localparam MOV    = 5'h0A;
+
+    localparam ADDF   = 5'h0B;
+    localparam SUBF   = 5'h0C;
+    localparam MULF   = 5'h0D;
+    localparam DIVF   = 5'h0E;
+
+    always_comb begin
+        case (op)
+            ADD:  result = a + b;
+            SUB:  result = a - b;
+            MUL: result = a * b;
+            DIV: result = a / b;
+            AND:  result = a & b;
+            OR:   result = a | b;
+            XOR:  result = a ^ b;
+            NOT:  result = ~a;
+
+            LSHIFT: result = a << b[5:0];
+            RSHIFT: result = a >> b[5:0];
+            MOV: result = b;
+
+            ADDF: result = fp_add(a, b);
+            SUBF: result = fp_add(a, { ~b[63], b[62:0] });
+            MULF: result = fp_mul(a, b);
+            DIVF: result = fp_div(a, b);
+            default:  result = 64'b0;
+        endcase
+    end
+endmodule
+
+function [63:0] fp_add;
+    input [63:0] x;
+    input [63:0] y;
+
+    reg sx, sy, sr;     // signs
+    reg [10:0] ex, ey, er;     // biased exponents
+    reg [52:0] mx, my;         // mantissas
+    reg [54:0] sum;            // handles carry out of addition
+                               //   bit 54: overflow carry
+                               //   bit 53: would-be carry after right-normalize
+                               //   bits 52:0: significand bits
+    reg [10:0] shift;         
+    integer    i;              
+
+    begin
+        sx = x[63];   
+        ex = x[62:52];   
+        mx = { 1'b1, x[51:0] };
+
+        sy = y[63];   
+        ey = y[62:52];   
+        my = { 1'b1, y[51:0] };
+
+        if (ex == 11'd0) mx = 53'd0;
+        if (ey == 11'd0) my = 53'd0;
+
+        //align exponents
+        if (ex >= ey) begin
+            shift = ex - ey;
+            my = my >> shift;
+            er = ex;
+        end else begin
+            shift = ey - ex;
+            mx = mx >> shift;
+            er = ey;
+        end
+
+        //add or subtract
+        if (sx == sy) begin 
+            //same sign
+            sum = { 2'b0, mx } + { 2'b0, my };
+            sr  = sx;
+        end else begin
+            // different signs: subtract smaller magnitude from larger.
+            if (mx >= my) begin
+                sum = { 2'b0, mx } - { 2'b0, my };
+                sr  = sx;
+            end else begin
+                sum = { 2'b0, my } - { 2'b0, mx };
+                sr  = sy;
+            end
+        end
+
+      //normalize carry
+        if (sum[53]) begin
+            sum = sum >> 1;
+            er  = er + 11'd1;
+        end else begin
+            for (i = 0; i < 52; i = i + 1) begin
+                if (!sum[52] && er > 11'd1) begin
+                    sum = sum << 1;
+                    er  = er - 11'd1;
+                end
+            end
+        end
+
+        if (sum[52:0] == 53'd0)
+            fp_add = 64'd0;
+        else
+            fp_add = { sr, er, sum[51:0] };
+    end
+endfunction
+
+function [63:0] fp_mul;
+    input [63:0] x;
+    input [63:0] y;
+
+    reg        sx, sy, sr;
+    reg [10:0] ex, ey, er;
+    reg [52:0] mx, my;
+    reg [105:0] product;
+
+    begin
+        sx = x[63];   ex = x[62:52];   mx = { 1'b1, x[51:0] };
+        sy = y[63];   ey = y[62:52];   my = { 1'b1, y[51:0] };
+
+        if (ex == 11'd0 || ey == 11'd0) begin
+            fp_mul = 64'd0;
+        end else begin
+            sr = sx ^ sy;
+
+            er = ex + ey - 11'd1023;
+
+            product = mx * my;
+
+           //normalize
+            if (product[105]) begin
+                fp_mul = { sr, er, product[104:53] };
+            end else begin
+                fp_mul = { sr, er - 11'd1, product[103:52] };
+            end
+        end
+    end
+endfunction
+
+
+function [63:0] fp_div;
+    input [63:0] x;
+    input [63:0] y;
+
+    reg        sx, sy, sr;
+    reg [10:0] ex, ey, er;
+    reg [52:0] mx, my;
+    reg [105:0] dividend;
+    reg [52:0]  quotient; 
+    begin
+        sx = x[63];   ex = x[62:52];   mx = { 1'b1, x[51:0] };
+        sy = y[63];   ey = y[62:52];   my = { 1'b1, y[51:0] };
+
+        // zero dividend -> result is 0
+        if (ex == 11'd0) begin
+            fp_div = 64'd0;
+        end else begin
+            sr = sx ^ sy;
+
+            er = ex - ey + 11'd1023;
+
+            dividend = { mx, 53'b0 };
+            quotient = dividend / { 53'b0, my };
+
+            //normalize
+            if (quotient[52]) begin
+                fp_div = { sr, er, quotient[51:0] };
+            end else begin
+                fp_div = { sr, er - 11'd1, quotient[50:0], 1'b0 };
+            end
+        end
+    end
+endfunction
+
+
+
+`define MEM_SIZE 524288   // 512 KB
+
+module reg_file (
+    input             clk,
+    input             reset,
+
+    input      [4:0]  rd_addr,   // which register to write (0–31)
+    input      [63:0] wr_data,   // value to write
+    input             wr_en,     // 1 = write, 0 = no write
+
+    input      [4:0]  rs_addr,   // 1st register to read
+    output     [63:0] rs_data,   // its current value
+
+    input      [4:0]  rt_addr,   // 2nd register to read
+    output     [63:0] rt_data,   // its current value
+
+    input      [4:0]  ru_addr,   // 3rd register to read
+    output     [63:0] ru_data    // its current value
+);
+
+reg [63:0] registers [0:31];
+
+assign rs_data = registers[rs_addr];
+assign rt_data = registers[rt_addr];
+assign ru_data = registers[ru_addr];
+
+
+always @(posedge clk) begin //only on rising edge of clock, everything else (fetch, decode, ALU) during clock
+
+    if (reset) begin
+        //clear registers and set stack pointer to top of memory
+        integer i;
+        for (i = 0; i < 32; i = i + 1)
+            registers[i] <= 64'd0;
+       
+        registers[31] <= `MEM_SIZE;
+
+    end else if (wr_en) begin      
+        registers[rd_addr] <= wr_data;
+    end
+    //if wr_en 0 = flip flops just hold their value
+end
+
+endmodule
+
+
+module decoder(
+    input  [31:0] instr,
+
+    output reg [4:0] read_addr_a,
+    output reg [4:0] read_addr_b,
+    output reg [4:0] read_addr_c,
+    output reg [4:0] write_addr,
+    output reg       write_en,
+    
+    //alu control signals
+    output reg [4:0] alu_op,
+    output reg [63:0] imm,
+    output reg        use_imm,
+
+    //memory control
+    output reg        mem_read,
+    output reg        mem_write,
+
+    //branch/jump control
+    output reg        branch_abs,
+    output reg        branch_rel,
+    output reg        branch_nz,
+    output reg        branch_gt,
+    output reg        call,
+    output reg        ret,
+
+    output reg        illegal
+);
+    wire [4:0] opcode = instr[4:0];
+    wire [4:0] rd     = instr[9:5];
+    wire [4:0] rs     = instr[14:10];
+    wire [4:0] rt     = instr[19:15];
+
+    wire [11:0] L12 = instr[31:20];
+
+    function [63:0] zext12;
+        input [11:0] x;
+        begin
+            zext12 = {52'd0, x};
+        end
+    endfunction
+
+    function [63:0] sext12;
+        input [11:0] x;
+        begin
+            sext12 = {{52{x[11]}}, x};
+        end
+    endfunction
+
+    localparam OP_AND    = 5'h00;
+    localparam OP_OR     = 5'h01;
+    localparam OP_XOR    = 5'h02;
+    localparam OP_NOT    = 5'h03;
+    localparam OP_SHFTR  = 5'h04;
+    localparam OP_SHFTRI = 5'h05;
+    localparam OP_SHFTL  = 5'h06;
+    localparam OP_SHFTLI = 5'h07;
+    localparam OP_BR     = 5'h08;
+    localparam OP_BRR_R  = 5'h09;
+    localparam OP_BRR_L  = 5'h0A;
+    localparam OP_BRNZ   = 5'h0B;
+    localparam OP_CALL   = 5'h0C;
+    localparam OP_RETURN = 5'h0D;
+    localparam OP_BRGT   = 5'h0E;
+    localparam OP_PRIV   = 5'h0F;
+    // mov rd, (rs)(L)
+    localparam OP_MOV_MR = 5'h10;
+    localparam OP_MOV_R  = 5'h11;
+    localparam OP_MOV_I  = 5'h12;
+    // mov (rd)(L), rs
+    localparam OP_MOV_RM = 5'h13;
+    localparam OP_ADDF   = 5'h14;
+    localparam OP_SUBF   = 5'h15;
+    localparam OP_MULF   = 5'h16;
+    localparam OP_DIVF   = 5'h17;
+    localparam OP_ADD    = 5'h18;
+    localparam OP_ADDI   = 5'h19;
+    localparam OP_SUB    = 5'h1A;
+    localparam OP_SUBI   = 5'h1B;
+    localparam OP_MUL    = 5'h1C;
+    localparam OP_DIV    = 5'h1D;
+
+    localparam ALU_ADD    = 5'h00;
+    localparam ALU_SUB    = 5'h01;
+    localparam ALU_AND    = 5'h02;
+    localparam ALU_OR     = 5'h03;
+    localparam ALU_XOR    = 5'h04;
+    localparam ALU_NOT    = 5'h05;
+    localparam ALU_LSHIFT = 5'h06;
+    localparam ALU_RSHIFT = 5'h07;
+    localparam ALU_MUL    = 5'h08;
+    localparam ALU_DIV    = 5'h09;
+    localparam ALU_MOV    = 5'h0A;
+    localparam ALU_ADDF   = 5'h0B;
+    localparam ALU_SUBF   = 5'h0C;
+    localparam ALU_MULF   = 5'h0D;
+    localparam ALU_DIVF   = 5'h0E;
+
+    always @(*) begin
+        read_addr_a = 5'h00;
+        read_addr_b = 5'h00;
+        read_addr_c = 5'h00;
+        write_addr  = 5'h00;
+        write_en    = 1'b0;
+
+        alu_op      = ALU_ADD;
+        imm         = 64'h0;
+        use_imm     = 1'b0;
+
+        mem_read    = 1'b0;
+        mem_write   = 1'b0;
+
+        branch_abs  = 1'b0;
+        branch_rel  = 1'b0;
+        branch_nz   = 1'b0;
+        branch_gt   = 1'b0;
+        call        = 1'b0;
+        ret         = 1'b0;
+
+        illegal     = 1'b0;
+
+        case (opcode)
+            OP_AND: begin
+                read_addr_a = rs;
+                read_addr_b = rt;
+                write_addr  = rd;
+                write_en    = 1'b1;
+                alu_op      = ALU_AND;
+            end
+
+            OP_OR: begin
+                read_addr_a = rs;
+                read_addr_b = rt;
+                write_addr  = rd;
+                write_en    = 1'b1;
+                alu_op      = ALU_OR;
+            end
+
+            OP_XOR: begin
+                read_addr_a = rs;
+                read_addr_b = rt;
+                write_addr  = rd;
+                write_en    = 1'b1;
+                alu_op      = ALU_XOR;
+            end
+
+            OP_NOT: begin
+                read_addr_a = rs;
+                write_addr  = rd;
+                write_en    = 1'b1;
+                alu_op      = ALU_NOT;
+            end
+
+            OP_SHFTR: begin
+                read_addr_a = rs;
+                read_addr_b = rt;
+                write_addr  = rd;
+                write_en    = 1'b1;
+                alu_op      = ALU_RSHIFT;
+            end
+
+            OP_SHFTRI: begin
+                read_addr_a = rd;
+                write_addr  = rd;
+                write_en    = 1'b1;
+                use_imm     = 1'b1;
+                imm         = zext12(L12);
+                alu_op      = ALU_RSHIFT;
+            end
+
+            OP_SHFTL: begin
+                read_addr_a = rs;
+                read_addr_b = rt;
+                write_addr  = rd;
+                write_en    = 1'b1;
+                alu_op      = ALU_LSHIFT;
+            end
+
+            OP_SHFTLI: begin
+                read_addr_a = rd;
+                write_addr  = rd;
+                write_en    = 1'b1;
+                use_imm     = 1'b1;
+                imm         = zext12(L12);
+                alu_op      = ALU_LSHIFT;
+            end
+
+            OP_ADD: begin
+                read_addr_a = rs;
+                read_addr_b = rt;
+                write_addr  = rd;
+                write_en    = 1'b1;
+                alu_op      = ALU_ADD;
+            end
+
+            OP_ADDI: begin
+                read_addr_a = rd;
+                write_addr  = rd;
+                write_en    = 1'b1;
+                use_imm     = 1'b1;
+                imm         = zext12(L12);
+                alu_op      = ALU_ADD;
+            end
+
+            OP_SUB: begin
+                read_addr_a = rs;
+                read_addr_b = rt;
+                write_addr  = rd;
+                write_en    = 1'b1;
+                alu_op      = ALU_SUB;
+            end
+
+            OP_SUBI: begin
+                read_addr_a = rd;
+                write_addr  = rd;
+                write_en    = 1'b1;
+                use_imm     = 1'b1;
+                imm         = zext12(L12);
+                alu_op      = ALU_SUB;
+            end
+
+            OP_MUL: begin
+                read_addr_a = rs;
+                read_addr_b = rt;
+                write_addr  = rd;
+                write_en    = 1'b1;
+                alu_op      = ALU_MUL;
+            end
+
+            OP_DIV: begin
+                read_addr_a = rs;
+                read_addr_b = rt;
+                write_addr  = rd;
+                write_en    = 1'b1;
+                alu_op      = ALU_DIV;
+            end
+
+            OP_MOV_R: begin
+                read_addr_b = rs;
+                write_addr  = rd;
+                write_en    = 1'b1;
+                alu_op      = ALU_MOV;
+            end
+
+            OP_MOV_I: begin
+                write_addr  = rd;
+                write_en    = 1'b1;
+                use_imm     = 1'b1;
+                imm         = zext12(L12);
+                alu_op      = ALU_MOV;
+            end
+
+            // mov rd, (rs)(L)  =>  rd <- Mem[rs + L]
+            OP_MOV_MR: begin
+                read_addr_a = rs;
+                write_addr  = rd;
+                write_en    = 1'b1;
+                use_imm     = 1'b1;
+                imm         = zext12(L12);
+                mem_read    = 1'b1;
+                alu_op      = ALU_ADD;
+            end
+
+            // mov (rd)(L), rs  =>  Mem[rd + L] <- rs
+            OP_MOV_RM: begin
+                read_addr_a = rd;
+                read_addr_b = rs;
+                use_imm     = 1'b1;
+                imm         = zext12(L12);
+                mem_write   = 1'b1;
+                alu_op      = ALU_ADD;
+            end
+
+            OP_ADDF: begin
+                read_addr_a = rs;
+                read_addr_b = rt;
+                write_addr  = rd;
+                write_en    = 1'b1;
+                alu_op      = ALU_ADDF;
+            end
+
+            OP_SUBF: begin
+                read_addr_a = rs;
+                read_addr_b = rt;
+                write_addr  = rd;
+                write_en    = 1'b1;
+                alu_op      = ALU_SUBF;
+            end
+
+            OP_MULF: begin
+                read_addr_a = rs;
+                read_addr_b = rt;
+                write_addr  = rd;
+                write_en    = 1'b1;
+                alu_op      = ALU_MULF;
+            end
+
+            OP_DIVF: begin
+                read_addr_a = rs;
+                read_addr_b = rt;
+                write_addr  = rd;
+                write_en    = 1'b1;
+                alu_op      = ALU_DIVF;
+            end
+
+            OP_BR: begin
+                read_addr_c = rd;
+                branch_abs  = 1'b1;
+            end
+
+            OP_BRR_R: begin
+                read_addr_c = rd;
+                branch_rel  = 1'b1;
+            end
+
+            OP_BRR_L: begin
+                use_imm     = 1'b1;
+                imm         = sext12(L12);
+                branch_rel  = 1'b1;
+            end
+
+            OP_BRNZ: begin
+                read_addr_a = rs;
+                read_addr_c = rd;
+                branch_nz   = 1'b1;
+            end
+
+            OP_BRGT: begin
+                read_addr_a = rs;
+                read_addr_b = rt;
+                read_addr_c = rd;
+                branch_gt   = 1'b1;
+            end
+
+            OP_CALL: begin
+                read_addr_c = rd;
+                call        = 1'b1;
+            end
+
+            OP_RETURN: begin
+                ret         = 1'b1;
+            end
+
+            OP_PRIV: begin
+                illegal     = 1'b1;
+            end
+
+            default: begin
+                illegal     = 1'b1;
+            end
+        endcase
+    end
+endmodule
