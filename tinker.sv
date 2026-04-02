@@ -10,11 +10,9 @@ module tinker_core(
     wire [63:0] pc;
     reg  [63:0] next_pc;
 
-    // The instruction memory returns one 32-bit instruction at the current PC.
     wire [31:0] instr;
 
   
-    // The decoder looks at `instr` and tells the rest of the core the details of what to do:
     wire [4:0]  read_addr_a;
     wire [4:0]  read_addr_b;
     wire [4:0]  read_addr_c;
@@ -59,6 +57,7 @@ module tinker_core(
     // The fetch module owns the program counter register.
     // On reset: PC becomes 0x2000.
     // On each later clock edge: PC becomes `next_pc`.
+    //should have direct access to memory?
     fetch_unit fetch (
         .clk(clk),
         .reset(reset),
@@ -125,6 +124,9 @@ module tinker_core(
         .data_rdata(data_rdata)
     );
 
+    /*always@(*) begin
+        if(reset = )
+    end*/
   //next pc logic
     always @(*) begin
         next_pc = pc + 64'd4;
@@ -146,6 +148,26 @@ module tinker_core(
             next_pc = data_rdata;
         end
     end
+
+    // Debug trace for instruction decode, ALU inputs/outputs, and writeback.
+    // Enable with: iverilog ... -DTRACE_TINKER
+`ifdef TRACE_TINKER
+    always @(posedge clk) begin
+        if (!reset) begin
+            $display(
+                "TRACE pc=%h instr=%h opcode=%02h rd=%0d rs=%0d rt=%0d | ra=%0d rb=%0d rc=%0d wa=%0d | A=%h B=%h IMM=%h use_imm=%b | alu_op=%02h alu_res=%h | mem_r=%b mem_w=%b data_r=%h | wr_dec=%b wr_en=%b illegal=%b | br_abs=%b br_rel=%b br_nz=%b br_gt=%b call=%b ret=%b | next_pc=%h",
+                pc, instr, instr[4:0], instr[9:5], instr[14:10], instr[19:15],
+                read_addr_a, read_addr_b, read_addr_c, write_addr,
+                reg_data_a, reg_data_b, imm, use_imm,
+                alu_op, alu_result,
+                mem_read, mem_write, data_rdata,
+                write_en_dec, write_back_en, illegal,
+                branch_abs, branch_rel, branch_nz, branch_gt, call, ret,
+                next_pc
+            );
+        end
+    end
+`endif
 endmodule
 
 module fetch_unit(
@@ -474,10 +496,10 @@ module decoder(
 
     output reg        illegal
 );
-    wire [4:0] opcode = instr[4:0];
-    wire [4:0] rd     = instr[9:5];
-    wire [4:0] rs     = instr[14:10];
-    wire [4:0] rt     = instr[19:15];
+    wire [4:0] opcode = instr[31:27];
+    wire [4:0] rd     = instr[26:22];
+    wire [4:0] rs     = instr[21:17];
+    wire [4:0] rt     = instr[16:12];
 
     wire [11:0] L12 = instr[31:20];
 
