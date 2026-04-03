@@ -1,8 +1,7 @@
+`ifndef MEM_SIZE
 `define MEM_SIZE 524288
+`endif
 
-`include "hdl/alu.sv"
-`include "hdl/reg_file.sv"
-`include "hdl/decoder.sv"
 
 module tinker_core(
     input clk,
@@ -225,8 +224,7 @@ module tinker_memory(
     end
 endmodule
 
-// Pull shared RTL blocks from the hdl/ directory so the core and unit tests
-// all exercise one source of truth.
+
 `include "hdl/alu.v"
 `include "hdl/reg_file.v"
 `include "hdl/decoder.v"
