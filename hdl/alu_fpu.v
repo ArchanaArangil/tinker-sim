@@ -379,13 +379,12 @@ function [63:0] fp_mul;
             // Their product is in [1.0, 4.0).
             // If the product >= 2.0, bit 105 of `product` is set.
             if (product[105]) begin
-                // Product is in [2.0, 4.0): shift right 1 to bring into [1.0, 2.0).
-                // Taking bits [104:53] is equivalent to >> 1 then taking [103:52].
-                fp_mul = { sr, er, product[104:53] };
+                // Product is in [2.0, 4.0): shift right 1 to bring into [1.0, 2.0)
+                // and bump the exponent to match.
+                fp_mul = { sr, er + 11'd1, product[104:53] };
             end else begin
-                // Product is already in [1.0, 2.0).  Bit 104 is the implicit 1.
-                // Decrement exponent to compensate for the missing shift.
-                fp_mul = { sr, er - 11'd1, product[103:52] };
+                // Product is already in [1.0, 2.0); keep the base exponent.
+                fp_mul = { sr, er, product[103:52] };
             end
         end
     end
@@ -421,8 +420,8 @@ function [63:0] fp_div;
     reg        sx, sy, sr;
     reg [10:0] ex, ey, er;
     reg [52:0] mx, my;
-    reg [105:0] dividend;  // mx shifted left 53 bits to preserve precision
-    reg [52:0]  quotient;  // 53-bit integer result of the division
+    reg [104:0] dividend;  // mx shifted left 52 bits to preserve precision
+    reg [52:0]  quotient;  // quotient is in [2^51, 2^53) for normalized inputs
 
     begin
         sx = x[63];   ex = x[62:52];   mx = { 1'b1, x[51:0] };
@@ -431,6 +430,10 @@ function [63:0] fp_div;
         // Zero dividend → result is 0.
         if (ex == 11'd0) begin
             fp_div = 64'd0;
+        end else if (ey == 11'd0) begin
+            // Minimal non-NaN handling: x / 0 => signed infinity.
+            sr = sx ^ sy;
+            fp_div = { sr, 11'h7FF, 52'd0 };
         end else begin
             // ----- Sign -----
             sr = sx ^ sy;
@@ -444,24 +447,22 @@ function [63:0] fp_div;
             // If we just did  mx / my  in integer arithmetic, we'd get either
             // 0 or 1 (since mx and my are both in [2^52, 2^53)).
             //
-            // Instead we scale mx up by 2^53 first:
-            //   dividend = mx * 2^53
-            //   quotient = dividend / my  →  approximately (mx/my) * 2^53
+            // Instead we scale mx up by 2^52 first:
+            //   dividend = mx * 2^52
+            //   quotient = dividend / my  →  approximately (mx/my) * 2^52
             //
             // The quotient is a 53-bit integer whose bits represent the
             // significand of the result.
             //
-            dividend = { mx, 53'b0 };        // left-shift mx by 53 positions
-            quotient = dividend / { 53'b0, my }; // integer division gives ~53-bit result
+            dividend = { mx, 52'b0 };        // left-shift mx by 52 positions
+            quotient = dividend / my;        // integer division gives a ~53-bit result
 
             // ----- Normalize -----
             // quotient[52] should be the implicit leading 1.
-            // If the leading 1 landed at bit 52 → result exponent is already correct.
+            // If not, shift left once and decrement the exponent.
             if (quotient[52]) begin
                 fp_div = { sr, er, quotient[51:0] };
             end else begin
-                // Leading 1 is at bit 51 (result < 1.0 before re-normalization).
-                // Shift left 1 and decrement exponent.
                 fp_div = { sr, er - 11'd1, quotient[50:0], 1'b0 };
             end
         end

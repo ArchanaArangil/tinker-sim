@@ -12,6 +12,8 @@ module tinker_core_tb;
     localparam OP_OR  = 5'h01;
     localparam OP_XOR = 5'h02;
     localparam OP_NOT = 5'h03;
+    localparam OP_MULF = 5'h16;
+    localparam OP_DIVF = 5'h17;
 
     tinker_core dut (
         .clk(clk),
@@ -26,7 +28,7 @@ module tinker_core_tb;
         input [4:0] rs;
         input [4:0] rt;
         begin
-            encode_r = { 12'h000, rt, rs, rd, opcode };
+            encode_r = { opcode, rd, rs, rt, 12'h000 };
         end
     endfunction
 
@@ -99,14 +101,18 @@ module tinker_core_tb;
         clear_memory();
 
         // Program:
-        //   r4 = r1 & r2
-        //   r5 = r1 | r2
-        //   r6 = r1 ^ r2
-        //   r7 = ~r3
+        //   r4  = r1 & r2
+        //   r5  = r1 | r2
+        //   r6  = r1 ^ r2
+        //   r7  = ~r3
+        //   r13 = r10 * r11   (2.0 * 3.0 = 6.0)
+        //   r14 = r12 / r10   (6.0 / 2.0 = 3.0)
         write_instr(START_PC + 64'd0,  encode_r(OP_AND, 5'd4, 5'd1, 5'd2));
-       /* write_instr(START_PC + 64'd4,  encode_r(OP_OR,  5'd5, 5'd1, 5'd2));
-        write_instr(START_PC + 64'd8,  encode_r(OP_XOR, 5'd6, 5'd1, 5'd2));
-        write_instr(START_PC + 64'd12, encode_r(OP_NOT, 5'd7, 5'd3, 5'd0));*/
+        write_instr(START_PC + 64'd4,  encode_r(OP_OR,   5'd5,  5'd1,  5'd2));
+        write_instr(START_PC + 64'd8,  encode_r(OP_XOR,  5'd6,  5'd1,  5'd2));
+        write_instr(START_PC + 64'd12, encode_r(OP_NOT,  5'd7,  5'd3,  5'd0));
+        write_instr(START_PC + 64'd16, encode_r(OP_MULF, 5'd13, 5'd10, 5'd11));
+        write_instr(START_PC + 64'd20, encode_r(OP_DIVF, 5'd14, 5'd12, 5'd10));
 
         @(posedge clk);
         #5;
@@ -115,13 +121,18 @@ module tinker_core_tb;
         seed_reg(5'd1, 64'h0000_0000_0000_F0F0);
         seed_reg(5'd2, 64'h0000_0000_0000_0FF0);
         seed_reg(5'd3, 64'h0000_0000_0000_00F0);
+        seed_reg(5'd10, 64'h4000_0000_0000_0000);
+        seed_reg(5'd11, 64'h4008_0000_0000_0000);
+        seed_reg(5'd12, 64'h4018_0000_0000_0000);
 
-        step_cycles(1);
+        step_cycles(6);
 
         check_reg("and", 5'd4, 64'h0000_0000_0000_00F0);
         check_reg("or",  5'd5, 64'h0000_0000_0000_FFF0);
         check_reg("xor", 5'd6, 64'h0000_0000_0000_FF00);
         check_reg("not", 5'd7, 64'hFFFF_FFFF_FFFF_FF0F);
+        check_reg("mulf 2*3", 5'd13, 64'h4018_0000_0000_0000);
+        check_reg("divf 6/2", 5'd14, 64'h4008_0000_0000_0000);
 
         if (errors == 0)
             $display("All tinker_core logic tests passed.");

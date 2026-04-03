@@ -141,11 +141,11 @@ function [63:0] fp_mul;
 
             product = mx * my;
 
-           //normalize
+           // Normalize the significand into [1.0, 2.0).
             if (product[105]) begin
-                fp_mul = { sr, er, product[104:53] };
+                fp_mul = { sr, er + 11'd1, product[104:53] };
             end else begin
-                fp_mul = { sr, er - 11'd1, product[103:52] };
+                fp_mul = { sr, er, product[103:52] };
             end
         end
     end
@@ -159,8 +159,8 @@ function [63:0] fp_div;
     reg        sx, sy, sr;
     reg [10:0] ex, ey, er;
     reg [52:0] mx, my;
-    reg [105:0] dividend;
-    reg [52:0]  quotient; 
+    reg [104:0] dividend;
+    reg [52:0]  quotient;
     begin
         sx = x[63];   ex = x[62:52];   mx = { 1'b1, x[51:0] };
         sy = y[63];   ey = y[62:52];   my = { 1'b1, y[51:0] };
@@ -168,15 +168,19 @@ function [63:0] fp_div;
         // zero dividend -> result is 0
         if (ex == 11'd0) begin
             fp_div = 64'd0;
+        end else if (ey == 11'd0) begin
+            // Minimal non-NaN handling: x / 0 => signed infinity.
+            sr = sx ^ sy;
+            fp_div = { sr, 11'h7FF, 52'd0 };
         end else begin
             sr = sx ^ sy;
 
             er = ex - ey + 11'd1023;
 
-            dividend = { mx, 53'b0 };
-            quotient = dividend / { 53'b0, my };
+            dividend = { mx, 52'b0 };
+            quotient = dividend / my;
 
-            //normalize
+            // quotient is in [2^51, 2^53); normalize into [1.0, 2.0).
             if (quotient[52]) begin
                 fp_div = { sr, er, quotient[51:0] };
             end else begin
