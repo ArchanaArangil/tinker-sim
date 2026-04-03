@@ -1,6 +1,8 @@
-`ifndef MEM_SIZE
 `define MEM_SIZE 524288
-`endif
+
+`include "hdl/alu.sv"
+`include "hdl/reg_file.sv"
+`include "hdl/decoder.sv"
 
 module tinker_core(
     input clk,
