@@ -320,6 +320,49 @@ function [63:0] fp_add;
             fp_add = { sr, er, sum[51:0] };
         //                ^    ^    ^
         //              sign  exp  mantissa (drop the implicit leading 1 at bit 52)
+end
+endfunction
+
+function integer fp_msb106;
+    input [105:0] value;
+    integer i;
+    begin
+        fp_msb106 = 0;
+        for (i = 0; i < 106; i = i + 1)
+            if (value[i])
+                fp_msb106 = i;
+    end
+endfunction
+
+function [63:0] fp_pack;
+    input        sign;
+    input integer exp_unb;
+    input [52:0] mant;
+
+    integer shift;
+    reg [52:0] sub_mant;
+    reg [10:0] biased_exp;
+
+    begin
+        if (mant == 53'd0) begin
+            fp_pack = { sign, 11'd0, 52'd0 };
+        end else if (exp_unb > 1023) begin
+            fp_pack = { sign, 11'h7FF, 52'd0 };
+        end else if (exp_unb >= -1022) begin
+            biased_exp = exp_unb + 1023;
+            fp_pack = { sign, biased_exp, mant[51:0] };
+        end else begin
+            shift = -1022 - exp_unb;
+            if (shift > 52)
+                sub_mant = 53'd0;
+            else
+                sub_mant = mant >> shift;
+
+            if (sub_mant == 53'd0)
+                fp_pack = { sign, 11'd0, 52'd0 };
+            else
+                fp_pack = { sign, 11'd0, sub_mant[51:0] };
+        end
     end
 endfunction
 
@@ -350,42 +393,51 @@ function [63:0] fp_mul;
     input [63:0] y;
 
     reg        sx, sy, sr;
-    reg [10:0] ex, ey, er;
+    reg [10:0] ex, ey;
+    reg [51:0] fx, fy;
     reg [52:0] mx, my;
     reg [105:0] product;   // 53 bits × 53 bits = up to 106-bit product
+    reg [105:0] norm_product;
+    reg        x_is_zero, y_is_zero;
+    reg        x_is_inf,  y_is_inf;
+    reg        x_is_nan,  y_is_nan;
+    integer    ex_unb, ey_unb, er_unb;
+    integer    msb_index, shift;
 
     begin
-        sx = x[63];   ex = x[62:52];   mx = { 1'b1, x[51:0] };
-        sy = y[63];   ey = y[62:52];   my = { 1'b1, y[51:0] };
+        sx = x[63];   ex = x[62:52];   fx = x[51:0];
+        sy = y[63];   ey = y[62:52];   fy = y[51:0];
+        sr = sx ^ sy;
 
-        // Zero check: if either exponent is 0, the value is 0 → product is 0.
-        if (ex == 11'd0 || ey == 11'd0) begin
-            fp_mul = 64'd0;
+        x_is_zero = (ex == 11'd0)   && (fx == 52'd0);
+        y_is_zero = (ey == 11'd0)   && (fy == 52'd0);
+        x_is_inf  = (ex == 11'h7FF) && (fx == 52'd0);
+        y_is_inf  = (ey == 11'h7FF) && (fy == 52'd0);
+        x_is_nan  = (ex == 11'h7FF) && (fx != 52'd0);
+        y_is_nan  = (ey == 11'h7FF) && (fy != 52'd0);
+
+        if (x_is_nan || y_is_nan || ((x_is_inf || y_is_inf) && (x_is_zero || y_is_zero))) begin
+            fp_mul = 64'h7FF8_0000_0000_0000;
+        end else if (x_is_inf || y_is_inf) begin
+            fp_mul = { sr, 11'h7FF, 52'd0 };
+        end else if (x_is_zero || y_is_zero) begin
+            fp_mul = { sr, 11'd0, 52'd0 };
         end else begin
-            // ----- Sign -----
-            sr = sx ^ sy;
-
-            // ----- Exponent -----
-            // Both are biased by 1023; adding them gives double-bias.
-            // Subtract one copy of the bias to get the correct result.
-            er = ex + ey - 11'd1023;
-
-            // ----- Significand -----
+            // Subnormals use exponent -1022 and omit the hidden leading 1.
+            mx = (ex == 11'd0) ? { 1'b0, fx } : { 1'b1, fx };
+            my = (ey == 11'd0) ? { 1'b0, fy } : { 1'b1, fy };
+            ex_unb = (ex == 11'd0) ? -1022 : (ex - 1023);
+            ey_unb = (ey == 11'd0) ? -1022 : (ey - 1023);
             product = mx * my;
-            // product[105:53] contains the top 53 bits when bit 105 is the MSB.
-
-            // ----- Normalize -----
-            // mx and my are both in [1.0, 2.0) as 1.fraction values.
-            // Their product is in [1.0, 4.0).
-            // If the product >= 2.0, bit 105 of `product` is set.
-            if (product[105]) begin
-                // Product is in [2.0, 4.0): shift right 1 to bring into [1.0, 2.0)
-                // and bump the exponent to match.
-                fp_mul = { sr, er + 11'd1, product[104:53] };
-            end else begin
-                // Product is already in [1.0, 2.0); keep the base exponent.
-                fp_mul = { sr, er, product[103:52] };
-            end
+            msb_index = fp_msb106(product);
+            shift = msb_index - 52;
+            norm_product = product;
+            if (shift > 0)
+                norm_product = product >> shift;
+            else if (shift < 0)
+                norm_product = product << (-shift);
+            er_unb = ex_unb + ey_unb + msb_index - 104;
+            fp_mul = fp_pack(sr, er_unb, norm_product[52:0]);
         end
     end
 endfunction
@@ -418,53 +470,57 @@ function [63:0] fp_div;
     input [63:0] y;
 
     reg        sx, sy, sr;
-    reg [10:0] ex, ey, er;
+    reg [10:0] ex, ey;
+    reg [51:0] fx, fy;
     reg [52:0] mx, my;
-    reg [104:0] dividend;  // mx shifted left 52 bits to preserve precision
-    reg [52:0]  quotient;  // quotient is in [2^51, 2^53) for normalized inputs
+    reg [105:0] dividend;  // mx shifted left 52 bits to preserve precision
+    reg [105:0] quotient;
+    reg [105:0] norm_quotient;
+    reg        x_is_zero, y_is_zero;
+    reg        x_is_inf,  y_is_inf;
+    reg        x_is_nan,  y_is_nan;
+    integer    ex_unb, ey_unb, er_unb;
+    integer    msb_index, shift;
 
     begin
-        sx = x[63];   ex = x[62:52];   mx = { 1'b1, x[51:0] };
-        sy = y[63];   ey = y[62:52];   my = { 1'b1, y[51:0] };
+        sx = x[63];   ex = x[62:52];   fx = x[51:0];
+        sy = y[63];   ey = y[62:52];   fy = y[51:0];
+        sr = sx ^ sy;
 
-        // Zero dividend → result is 0.
-        if (ex == 11'd0) begin
-            fp_div = 64'd0;
-        end else if (ey == 11'd0) begin
-            // Minimal non-NaN handling: x / 0 => signed infinity.
-            sr = sx ^ sy;
+        x_is_zero = (ex == 11'd0)   && (fx == 52'd0);
+        y_is_zero = (ey == 11'd0)   && (fy == 52'd0);
+        x_is_inf  = (ex == 11'h7FF) && (fx == 52'd0);
+        y_is_inf  = (ey == 11'h7FF) && (fy == 52'd0);
+        x_is_nan  = (ex == 11'h7FF) && (fx != 52'd0);
+        y_is_nan  = (ey == 11'h7FF) && (fy != 52'd0);
+
+        if (x_is_nan || y_is_nan || (x_is_zero && y_is_zero) || (x_is_inf && y_is_inf)) begin
+            fp_div = 64'h7FF8_0000_0000_0000;
+        end else if (x_is_inf) begin
             fp_div = { sr, 11'h7FF, 52'd0 };
+        end else if (y_is_inf) begin
+            fp_div = { sr, 11'd0, 52'd0 };
+        end else if (y_is_zero) begin
+            fp_div = { sr, 11'h7FF, 52'd0 };
+        end else if (x_is_zero) begin
+            fp_div = { sr, 11'd0, 52'd0 };
         end else begin
-            // ----- Sign -----
-            sr = sx ^ sy;
+            mx = (ex == 11'd0) ? { 1'b0, fx } : { 1'b1, fx };
+            my = (ey == 11'd0) ? { 1'b0, fy } : { 1'b1, fy };
+            ex_unb = (ex == 11'd0) ? -1022 : (ex - 1023);
+            ey_unb = (ey == 11'd0) ? -1022 : (ey - 1023);
 
-            // ----- Exponent -----
-            er = ex - ey + 11'd1023;
-
-            // ----- Significand -----
-            //
-            // We want  mx / my  with 53 bits of precision.
-            // If we just did  mx / my  in integer arithmetic, we'd get either
-            // 0 or 1 (since mx and my are both in [2^52, 2^53)).
-            //
-            // Instead we scale mx up by 2^52 first:
-            //   dividend = mx * 2^52
-            //   quotient = dividend / my  →  approximately (mx/my) * 2^52
-            //
-            // The quotient is a 53-bit integer whose bits represent the
-            // significand of the result.
-            //
-            dividend = { mx, 52'b0 };        // left-shift mx by 52 positions
-            quotient = dividend / my;        // integer division gives a ~53-bit result
-
-            // ----- Normalize -----
-            // quotient[52] should be the implicit leading 1.
-            // If not, shift left once and decrement the exponent.
-            if (quotient[52]) begin
-                fp_div = { sr, er, quotient[51:0] };
-            end else begin
-                fp_div = { sr, er - 11'd1, quotient[50:0], 1'b0 };
-            end
+            dividend = { 1'b0, mx, 52'b0 };
+            quotient = dividend / my;
+            msb_index = fp_msb106(quotient);
+            shift = msb_index - 52;
+            norm_quotient = quotient;
+            if (shift > 0)
+                norm_quotient = quotient >> shift;
+            else if (shift < 0)
+                norm_quotient = quotient << (-shift);
+            er_unb = ex_unb - ey_unb + msb_index - 52;
+            fp_div = fp_pack(sr, er_unb, norm_quotient[52:0]);
         end
     end
 endfunction
