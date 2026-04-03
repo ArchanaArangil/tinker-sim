@@ -501,7 +501,7 @@ module decoder(
     wire [4:0] rs     = instr[21:17];
     wire [4:0] rt     = instr[16:12];
 
-    wire [11:0] L12 = instr[31:20];
+    wire [11:0] L12 = instr[11:0];
 
     function [63:0] zext12;
         input [11:0] x;
