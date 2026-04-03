@@ -1,5 +1,7 @@
 
+`ifndef MEM_SIZE
 `define MEM_SIZE 524288   // 512 KB
+`endif
 
 module reg_file (
     input             clk,

@@ -26,12 +26,12 @@ module decoder(
 
     output reg        illegal
 );
-    wire [4:0] opcode = instr[4:0];
-    wire [4:0] rd     = instr[9:5];
-    wire [4:0] rs     = instr[14:10];
-    wire [4:0] rt     = instr[19:15];
+    wire [4:0] opcode = instr[31:27];
+    wire [4:0] rd     = instr[26:22];
+    wire [4:0] rs     = instr[21:17];
+    wire [4:0] rt     = instr[16:12];
 
-    wire [11:0] L12 = instr[31:20];
+    wire [11:0] L12 = instr[11:0];
 
     function [63:0] zext12;
         input [11:0] x;
@@ -333,11 +333,13 @@ module decoder(
             end
 
             OP_CALL: begin
+                read_addr_b = 5'd31;
                 read_addr_c = rd;
                 call        = 1'b1;
             end
 
             OP_RETURN: begin
+                read_addr_b = 5'd31;
                 ret         = 1'b1;
             end
 
