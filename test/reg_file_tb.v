@@ -49,6 +49,9 @@ module reg_file_tb;
     endtask
 
     initial begin
+        $dumpfile("sim/reg_file_tb.vcd");
+        $dumpvars(0, reg_file_tb);
+
         clk = 1'b0;
         reset = 1'b1;
         rd_addr = 5'd0;

@@ -144,6 +144,9 @@ module decoder_tb;
     endtask
 
     initial begin
+        $dumpfile("sim/decoder_tb.vcd");
+        $dumpvars(0, decoder_tb);
+
         errors = 0;
         instr = 32'h0;
 
